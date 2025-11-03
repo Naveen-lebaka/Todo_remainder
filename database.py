@@ -6,5 +6,5 @@ def get_db_connection():
         host="localhost",
         user="root",          # change if needed
         password="root123",
-        database="todo_db"
+        database="todo"
     )
