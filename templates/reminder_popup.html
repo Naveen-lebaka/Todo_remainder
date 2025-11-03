@@ -51,6 +51,21 @@
         color: #333;
         font-size: 16px;
     }
+
+    /* DND toggle switch */
+    .dnd-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 15px;
+        font-size: 16px;
+    }
+
+    .dnd-toggle input {
+        margin-left: 8px;
+        width: 20px;
+        height: 20px;
+    }
 </style>
 
 <!-- Overlay and popup -->
@@ -64,7 +79,77 @@
 <!-- Alarm Sound -->
 <audio id="alarm-sound" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"></audio>
 
+<!-- Do Not Disturb Toggle -->
+<div class="dnd-toggle">
+    <label>🔕 Do Not Disturb
+        <input type="checkbox" id="dnd-toggle">
+    </label>
+</div>
+
 <script>
+    let isDND = false; // initial DND state
+    let missedReminders = [];
+    let interval = 10000; // default: 10 seconds
+    let intervalId = null;
+
+    // 🔍 Detect if system/browser is in DND or Focus mode
+    async function detectSystemDND() {
+        // Case 1: Notification permission denied => likely in Focus/DND
+        if (Notification.permission === "denied") {
+            return true;
+        }
+
+        // Case 2: Tab is hidden or inactive
+        if (document.hidden) {
+            return true;
+        }
+
+        // Case 3: Manual toggle stored locally
+        const stored = localStorage.getItem("dndMode");
+        return stored === "true";
+    }
+
+    // Initialize toggle and auto DND detection
+    document.addEventListener("DOMContentLoaded", async () => {
+        const dndToggle = document.getElementById("dnd-toggle");
+        const savedState = localStorage.getItem("dndMode");
+
+        if (savedState === "true") {
+            dndToggle.checked = true;
+            isDND = true;
+        }
+
+        // Try automatic detection once on load
+        const autoDND = await detectSystemDND();
+        if (autoDND) {
+            isDND = true;
+            dndToggle.checked = true;
+        }
+
+        // Manual toggle listener
+        dndToggle.addEventListener("change", () => {
+            isDND = dndToggle.checked;
+            localStorage.setItem("dndMode", isDND);
+            if (!isDND) {
+                checkMissedReminders();
+            }
+        });
+
+        // Detect when user returns to tab or DND turns off
+        document.addEventListener("visibilitychange", async () => {
+            if (!document.hidden) {
+                const sysDND = await detectSystemDND();
+                if (!sysDND && isDND) {
+                    // System DND turned off
+                    isDND = false;
+                    dndToggle.checked = false;
+                    localStorage.setItem("dndMode", false);
+                    checkMissedReminders();
+                }
+            }
+        });
+    });
+
     async function fetchReminders() {
         const response = await fetch("/reminder-data");
         return await response.json();
@@ -72,12 +157,14 @@
 
     function getCurrentDateTime() {
         const now = new Date();
-        const date = now.toISOString().split('T')[0]; // YYYY-MM-DD
-        const time = now.toTimeString().slice(0, 5); // HH:MM
+        const date = now.toISOString().split('T')[0];
+        const time = now.toTimeString().slice(0, 5);
         return { date, time };
     }
 
     function showPopup(task) {
+        if (isDND) return; // Skip popup if in DND mode
+
         document.getElementById("popup-title").innerText = task.title;
         document.getElementById("popup").style.display = "block";
         document.getElementById("overlay").style.display = "block";
@@ -90,49 +177,48 @@
         };
     }
 
-    // 🔁 Dynamic reminder checking interval
-    let interval = 10000; // default: 10 seconds
-    let intervalId = null;
+    function checkMissedReminders() {
+        if (missedReminders.length > 0) {
+            missedReminders.forEach(task => showPopup(task));
+            missedReminders = [];
+        }
+    }
 
     async function dynamicCheck() {
         const reminders = await fetchReminders();
         const now = new Date();
-
-        // Find the nearest upcoming task time
         let nearestDiff = Infinity;
+
         reminders.forEach(task => {
             const taskDateTime = new Date(`${task.date}T${task.time}:00`);
-            const diff = taskDateTime - now; // milliseconds
-            if (diff > 0 && diff < nearestDiff) {
-                nearestDiff = diff;
-            }
+            const diff = taskDateTime - now;
+            if (diff > 0 && diff < nearestDiff) nearestDiff = diff;
         });
 
-        // Adjust interval dynamically
-        if (nearestDiff <= 10000) {
-            interval = 500; // within 10 sec → check every 1s
-        } else if (nearestDiff > 10000) {
-            interval = 10000; // more than 10 sec → check every 10s
-        }
+        // Adjust check interval dynamically
+        if (nearestDiff <= 5000) interval = 1000;
+        else if (nearestDiff > 10000) interval = 10000;
 
-        // Update current time display
-        const date = now.toISOString().split('T')[0];
-        const time = now.toTimeString().slice(0, 5);
+        const { date, time } = getCurrentDateTime();
         document.getElementById("time-display").innerText =
-            "Current Time: " + date + " " + time;
+            "Current Time: " + date + " " + time +
+            (isDND ? " 🔕 (DND On)" : "");
 
-        // Check if any task matches current time
+        // Check each reminder
         reminders.forEach(task => {
             if (task.date === date && task.time === time) {
-                showPopup(task);
+                if (isDND) {
+                    missedReminders.push(task);
+                } else {
+                    showPopup(task);
+                }
             }
         });
 
-        // Clear previous interval and reset with new timing
         clearInterval(intervalId);
         intervalId = setInterval(dynamicCheck, interval);
     }
 
-    // Start first check immediately
+    // Start reminder checking
     dynamicCheck();
 </script>
