@@ -1,37 +1,43 @@
 <!-- reminder_popup.html -->
 <style>
-    /* Popup styling */
+    /* popup styles */
     #popup {
         display: none;
         position: fixed;
         top: 30%;
         left: 50%;
         transform: translate(-50%, -50%);
-        background: white;
+        background: linear-gradient(180deg, #fff 0%, #f9fbff 100%);
         border-radius: 12px;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-        padding: 25px 30px;
+        box-shadow: 0 10px 35px rgba(15, 23, 42, 0.2);
+        padding: 24px 28px;
         z-index: 9999;
         text-align: center;
-        width: 300px;
+        width: 340px;
+        font-family: 'Poppins', sans-serif;
     }
 
     #popup h2 {
-        color: #007bff;
+        color: #0b57d0;
+        margin-bottom: 6px;
+        font-size: 20px;
+        font-weight: 600;
+    }
+
+    #popup p {
+        color: #374151;
+        margin-bottom: 12px;
     }
 
     #popup button {
-        background: #007bff;
+        background: #0b57d0;
         color: white;
         border: none;
-        padding: 10px 20px;
-        border-radius: 6px;
-        margin-top: 15px;
+        padding: 10px 18px;
+        border-radius: 8px;
+        margin-top: 8px;
         cursor: pointer;
-    }
-
-    #popup button:hover {
-        background: #0056b3;
+        font-weight: 600;
     }
 
     #overlay {
@@ -41,113 +47,45 @@
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(8, 15, 22, 0.45);
         z-index: 9998;
-    }
-
-    #time-display {
-        text-align: center;
-        margin-top: 15px;
-        color: #333;
-        font-size: 16px;
-    }
-
-    /* DND toggle switch */
-    .dnd-toggle {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-top: 15px;
-        font-size: 16px;
-    }
-
-    .dnd-toggle input {
-        margin-left: 8px;
-        width: 20px;
-        height: 20px;
     }
 </style>
 
-<!-- Overlay and popup -->
 <div id="overlay"></div>
 <div id="popup">
-    <h2 id="popup-title"></h2>
+    <h2 id="popup-title">Reminder</h2>
     <p>It's time to complete your task!</p>
-    <button id="mark-done">Mark as Read</button>
+    <div style="display:flex; gap:10px; justify-content:center;">
+        <button id="mark-done">Mark as Read</button>
+        <button id="snooze-5" class="btn">Snooze 5m</button>
+    </div>
 </div>
 
 <!-- Alarm Sound -->
 <audio id="alarm-sound" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"></audio>
 
-<!-- Do Not Disturb Toggle -->
-<div class="dnd-toggle">
-    <label>🔕 Do Not Disturb
-        <input type="checkbox" id="dnd-toggle">
-    </label>
-</div>
-
 <script>
-    let isDND = false; // initial DND state
+    let isDND = false;
     let missedReminders = [];
-    let interval = 10000; // default: 10 seconds
+    let interval = 10000;
     let intervalId = null;
+    let currentPopTask = null;
 
-    // 🔍 Detect if system/browser is in DND or Focus mode
-    async function detectSystemDND() {
-        // Case 1: Notification permission denied => likely in Focus/DND
-        if (Notification.permission === "denied") {
-            return true;
+    // read DND checkbox from header
+    function initDND() {
+        const dndToggle = document.getElementById("dnd-toggle");
+        if (dndToggle) {
+            isDND = dndToggle.checked || false;
+            dndToggle.addEventListener("change", () => {
+                isDND = dndToggle.checked;
+                if (!isDND) checkMissedReminders();
+            });
         }
-
-        // Case 2: Tab is hidden or inactive
-        if (document.hidden) {
-            return true;
-        }
-
-        // Case 3: Manual toggle stored locally
-        const stored = localStorage.getItem("dndMode");
-        return stored === "true";
     }
 
-    // Initialize toggle and auto DND detection
-    document.addEventListener("DOMContentLoaded", async () => {
-        const dndToggle = document.getElementById("dnd-toggle");
-        const savedState = localStorage.getItem("dndMode");
-
-        if (savedState === "true") {
-            dndToggle.checked = true;
-            isDND = true;
-        }
-
-        // Try automatic detection once on load
-        const autoDND = await detectSystemDND();
-        if (autoDND) {
-            isDND = true;
-            dndToggle.checked = true;
-        }
-
-        // Manual toggle listener
-        dndToggle.addEventListener("change", () => {
-            isDND = dndToggle.checked;
-            localStorage.setItem("dndMode", isDND);
-            if (!isDND) {
-                checkMissedReminders();
-            }
-        });
-
-        // Detect when user returns to tab or DND turns off
-        document.addEventListener("visibilitychange", async () => {
-            if (!document.hidden) {
-                const sysDND = await detectSystemDND();
-                if (!sysDND && isDND) {
-                    // System DND turned off
-                    isDND = false;
-                    dndToggle.checked = false;
-                    localStorage.setItem("dndMode", false);
-                    checkMissedReminders();
-                }
-            }
-        });
+    document.addEventListener("DOMContentLoaded", () => {
+        initDND();
     });
 
     async function fetchReminders() {
@@ -163,17 +101,24 @@
     }
 
     function showPopup(task) {
-        if (isDND) return; // Skip popup if in DND mode
-
+        currentPopTask = task;
+        if (isDND) return;
         document.getElementById("popup-title").innerText = task.title;
         document.getElementById("popup").style.display = "block";
         document.getElementById("overlay").style.display = "block";
-
         const sound = document.getElementById("alarm-sound");
         sound.play();
 
         document.getElementById("mark-done").onclick = () => {
             window.location.href = `/complete/${task.id}`;
+        };
+
+        document.getElementById("snooze-5").onclick = () => {
+            document.getElementById("popup").style.display = "none";
+            document.getElementById("overlay").style.display = "none";
+            setTimeout(() => {
+                missedReminders.push(task);
+            }, 300000); // 5 min
         };
     }
 
@@ -195,16 +140,15 @@
             if (diff > 0 && diff < nearestDiff) nearestDiff = diff;
         });
 
-        // Adjust check interval dynamically
         if (nearestDiff <= 5000) interval = 1000;
         else if (nearestDiff > 10000) interval = 10000;
 
         const { date, time } = getCurrentDateTime();
-        document.getElementById("time-display").innerText =
-            "Current Time: " + date + " " + time +
-            (isDND ? " 🔕 (DND On)" : "");
+        const timeDisplay = document.getElementById("time-display");
+        if (timeDisplay) {
+            timeDisplay.innerText = "Current Time: " + date + " " + time + (isDND ? " 🔕 (DND On)" : "");
+        }
 
-        // Check each reminder
         reminders.forEach(task => {
             if (task.date === date && task.time === time) {
                 if (isDND) {
@@ -219,6 +163,5 @@
         intervalId = setInterval(dynamicCheck, interval);
     }
 
-    // Start reminder checking
     dynamicCheck();
 </script>

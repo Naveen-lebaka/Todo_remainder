@@ -5,44 +5,78 @@
     <meta charset="UTF-8">
     <title>ToDo Reminder App</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
 </head>
 
 <body>
     <div class="container">
-        <h1>🕒 ToDo Reminder App</h1>
+        <header class="top-row card">
+            <h1>🕒 ToDo Reminder</h1>
 
-        <form method="POST" action="/add" class="form">
-            <input type="text" name="title" placeholder="Enter task title" required>
-            <input type="date" name="date" required>
-            <input type="time" name="time" required>
+            <!-- DND Toggle inside header card (global) -->
+            <div class="dnd-wrapper">
+                <label class="dnd-label">🔕 DND
+                    <input type="checkbox" id="dnd-toggle">
+                </label>
+            </div>
+        </header>
 
-            <select name="frequency">
-                <option value="">One Time</option>
-                <option value="daily">Every Day</option>
-                <option value="monthly">Every Month</option>
-                <option value="yearly">Every Year</option>
-            </select>
+        <form method="POST" action="/add" class="form card">
+            <div class="form-row">
+                <input type="text" name="title" placeholder="Enter task title" required>
+            </div>
+            <div class="form-row split">
+                <input type="date" name="date" required>
+                <input type="time" name="time" required>
+            </div>
 
-            <button type="submit">Add Task</button>
+            <div class="form-row">
+                <select name="frequency">
+                    <option value="">One Time</option>
+                    <option value="daily">Every Day</option>
+                    <option value="monthly">Every Month</option>
+                    <option value="yearly">Every Year</option>
+                </select>
+            </div>
+
+            <div class="form-row">
+                <button type="submit" class="btn primary">Add Task</button>
+            </div>
         </form>
 
-        <ul class="task-list">
-            {% for task in tasks %}
-            <li>
-                <b>{{ task.title }}</b> — {{ task.date }} at {{ task.time }}
-                {% if task.frequency %}
-                ({{ task.frequency }})
-                {% endif %}
-                <a href="/complete/{{ task.id }}" class="done">✔ Mark as Read</a>
-            </li>
+        <div class="tasks card">
+            {% if tasks %}
+            <ul class="task-list">
+                {% for task in tasks %}
+                <li class="task-item">
+                    <div class="task-left">
+                        <div class="task-title">{{ task.title }}</div>
+                        <div class="task-meta">{{ task.date }} • {{ task.time }}</div>
+                    </div>
+
+                    <div class="task-right">
+                        {% if task.frequency %}
+                        <span class="badge">{{ task.frequency }}</span>
+                        {% endif %}
+
+                        <a href="/complete/{{ task.id }}" class="btn small">Mark as Read</a>
+
+                        <form method="POST" action="/delete/{{ task.id }}" class="inline-delete"
+                            onsubmit="return confirmDelete();">
+                            <button type="submit" class="btn small delete">Delete</button>
+                        </form>
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
             {% else %}
-            <p>No tasks yet!</p>
-            {% endfor %}
-        </ul>
+            <div class="empty">No tasks yet — add one above ✨</div>
+            {% endif %}
+        </div>
 
         {% with messages = get_flashed_messages() %}
         {% if messages %}
-        <div class="alert">
+        <div class="alert card">
             {% for msg in messages %}
             <p>{{ msg }}</p>
             {% endfor %}
@@ -54,6 +88,12 @@
     </div>
 
     {% include 'reminder_popup.html' %}
+
+    <script>
+        function confirmDelete() {
+            return confirm("Are you sure you want to permanently delete this reminder? This cannot be undone.");
+        }
+    </script>
 </body>
 
 </html>
