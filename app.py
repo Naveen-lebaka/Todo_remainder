@@ -12,10 +12,6 @@ app.secret_key = "todo-secret-key"
 # Helpers: robust parsing and next occurrence
 # -----------------------
 def _timedelta_to_time(td: timedelta) -> time:
-    """
-    Convert a MySQL TIME returned as timedelta to a time object.
-    Normalizes negative durations into the 0-24h range.
-    """
     total_seconds = int(td.total_seconds()) % (24 * 3600)
     hours = (total_seconds // 3600) % 24
     minutes = (total_seconds % 3600) // 60
@@ -24,20 +20,11 @@ def _timedelta_to_time(td: timedelta) -> time:
 
 
 def parse_date_time_fields(db_date, db_time):
-    """
-    Robustly parse DB date/time fields into a single datetime.
-    Accepts:
-      - db_date: date or str 'YYYY-MM-DD'
-      - db_time: str 'HH:MM' or 'HH:MM:SS' or 'HH:MM:SS.mmm',
-                 datetime.time, or datetime.timedelta (MySQL TIME)
-    Returns: datetime (naive, server local)
-    """
-    # --- date part ---
+    # date part
     if isinstance(db_date, str):
         try:
             d = datetime.strptime(db_date, "%Y-%m-%d").date()
         except ValueError:
-            # fallback for isoformat or with time part
             d = datetime.fromisoformat(db_date).date()
     elif isinstance(db_date, date):
         d = db_date
@@ -45,13 +32,11 @@ def parse_date_time_fields(db_date, db_time):
         raise ValueError(
             f"Unsupported date field: {type(db_date)} -> {db_date!r}")
 
-    # --- time part ---
+    # time part
     if isinstance(db_time, time):
         t = db_time
-
     elif isinstance(db_time, timedelta):
         t = _timedelta_to_time(db_time)
-
     elif isinstance(db_time, str):
         ts = db_time.strip()
         parsed = None
@@ -74,10 +59,8 @@ def parse_date_time_fields(db_date, db_time):
         if parsed is None:
             raise ValueError(f"Unsupported time string format: {ts!r}")
         t = parsed
-
     elif isinstance(db_time, (bytes, bytearray)):
         return parse_date_time_fields(db_date, db_time.decode())
-
     else:
         raise ValueError(
             f"Unsupported time field: {type(db_time)} -> {db_time!r}")
@@ -86,14 +69,9 @@ def parse_date_time_fields(db_date, db_time):
 
 
 def next_occurrence(dt: datetime, frequency: str) -> datetime:
-    """
-    Given a datetime dt (current scheduled occurrence) and frequency in ('daily','monthly','yearly')
-    return the next scheduled datetime (one step forward).
-    """
     frequency = (frequency or "").lower().strip()
     if frequency == "daily":
         return dt + timedelta(days=1)
-
     elif frequency == "monthly":
         year = dt.year
         month = dt.month + 1
@@ -104,7 +82,6 @@ def next_occurrence(dt: datetime, frequency: str) -> datetime:
         last_day = calendar.monthrange(year, month)[1]
         new_day = min(day, last_day)
         return datetime(year, month, new_day, dt.hour, dt.minute, dt.second)
-
     elif frequency == "yearly":
         year = dt.year + 1
         month = dt.month
@@ -114,7 +91,6 @@ def next_occurrence(dt: datetime, frequency: str) -> datetime:
         last_day = calendar.monthrange(year, month)[1]
         new_day = min(day, last_day)
         return datetime(year, month, new_day, dt.hour, dt.minute, dt.second)
-
     else:
         raise ValueError("Unsupported frequency")
 
@@ -158,15 +134,8 @@ def add():
 
 @app.route('/complete/<int:task_id>')
 def complete(task_id):
-    """
-    Mark the current scheduled occurrence as completed.
-    For recurring tasks (daily/monthly/yearly), insert an entry into task_history
-    and update tasks.date/time to the next occurrence (do not delete).
-    For one-time tasks, mark completed = 1 (do not delete).
-    """
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-
     cursor.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))
     task = cursor.fetchone()
     if not task:
@@ -177,11 +146,9 @@ def complete(task_id):
     title = task['title']
     frequency = (task['frequency'] or '').lower().strip()
 
-    # parse scheduled datetime (robust)
     try:
         scheduled_dt = parse_date_time_fields(task['date'], task['time'])
     except Exception as e:
-        # fallback: if time is timedelta, coerce to string then parse
         if isinstance(task.get('time'), timedelta):
             total_seconds = int(task['time'].total_seconds()) % (24 * 3600)
             hh = (total_seconds // 3600) % 24
@@ -197,10 +164,8 @@ def complete(task_id):
     now = datetime.now()
 
     if not frequency:
-        # one-time task: mark completed (do NOT delete)
         cursor.execute(
             "UPDATE tasks SET completed = 1 WHERE id = %s", (task_id,))
-        # optional: insert into history if table exists
         try:
             cursor.execute("""
                 INSERT INTO task_history (task_id, title, scheduled_datetime, completed_at, missed, notes)
@@ -220,7 +185,6 @@ def complete(task_id):
         flash("Task marked as completed.")
         return redirect(url_for('index'))
 
-    # recurring task: compute completed_occurrence and next occurrence(s)
     occurrence_dt = scheduled_dt
     if occurrence_dt > now:
         completed_occurrence = occurrence_dt
@@ -242,7 +206,6 @@ def complete(task_id):
             cur = next_occurrence(cur, frequency)
             missed_count += 1
 
-    # log into history if available
     try:
         cursor.execute("""
             INSERT INTO task_history (task_id, title, scheduled_datetime, completed_at, missed, notes)
@@ -259,7 +222,6 @@ def complete(task_id):
     except Exception:
         conn.rollback()
 
-    # compute next future occurrence (> now)
     next_dt = completed_occurrence
     while True:
         next_dt = next_occurrence(next_dt, frequency)
@@ -269,10 +231,8 @@ def complete(task_id):
     new_date = next_dt.date().strftime("%Y-%m-%d")
     new_time = next_dt.time().strftime("%H:%M:%S")
 
-    cursor.execute("""
-        UPDATE tasks SET date = %s, time = %s, completed = 0
-        WHERE id = %s
-    """, (new_date, new_time, task_id))
+    cursor.execute("UPDATE tasks SET date = %s, time = %s, completed = 0 WHERE id = %s",
+                   (new_date, new_time, task_id))
     conn.commit()
     conn.close()
 
@@ -281,23 +241,66 @@ def complete(task_id):
     return redirect(url_for('index'))
 
 
+@app.route('/snooze/<int:task_id>', methods=['POST'])
+def snooze_task(task_id):
+    minutes = 5
+    try:
+        if request.is_json:
+            payload = request.get_json()
+            minutes = int(payload.get("minutes", 5))
+        else:
+            minutes = int(request.form.get("minutes", 5))
+    except Exception:
+        minutes = 5
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))
+    task = cursor.fetchone()
+    if not task:
+        conn.close()
+        return jsonify({"success": False, "error": "Task not found"}), 404
+
+    try:
+        scheduled_dt = parse_date_time_fields(task['date'], task['time'])
+    except Exception:
+        if isinstance(task.get('time'), timedelta):
+            total_seconds = int(task['time'].total_seconds()) % (24 * 3600)
+            hh = (total_seconds // 3600) % 24
+            mm = (total_seconds % 3600) // 60
+            ss = total_seconds % 60
+            task_time_str = f"{hh:02d}:{mm:02d}:{ss:02d}"
+            scheduled_dt = parse_date_time_fields(task['date'], task_time_str)
+        else:
+            conn.close()
+            return jsonify({"success": False, "error": "Unable to parse scheduled time"}), 500
+
+    new_dt = scheduled_dt + timedelta(minutes=minutes)
+    new_date = new_dt.date().strftime("%Y-%m-%d")
+    new_time = new_dt.time().strftime("%H:%M:%S")
+    try:
+        cursor.execute("UPDATE tasks SET date = %s, time = %s, completed = 0 WHERE id = %s",
+                       (new_date, new_time, task_id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    conn.close()
+    return jsonify({"success": True, "new_date": new_date, "new_time": new_time})
+
+
 @app.route('/delete/<int:task_id>', methods=['POST'])
 def delete_task(task_id):
-    """
-    Permanently delete a task and its history (if any).
-    Uses POST to avoid accidental deletes via GET.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # delete history (if table exists)
         try:
             cursor.execute(
                 "DELETE FROM task_history WHERE task_id = %s", (task_id,))
         except Exception:
             conn.rollback()
-
-        # delete the task itself
         cursor.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
         conn.commit()
         flash("Task deleted successfully.")
@@ -306,13 +309,11 @@ def delete_task(task_id):
         flash(f"Failed to delete task: {e}")
     finally:
         conn.close()
-
     return redirect(url_for('index'))
 
 
 @app.route('/reminder-data')
 def reminder_data():
-    """Send all active reminders to frontend"""
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     cursor.execute(
@@ -322,13 +323,10 @@ def reminder_data():
 
     fixed_tasks = []
     for t in tasks:
-        # Convert date
         if hasattr(t['date'], 'strftime'):
             t['date'] = t['date'].strftime("%Y-%m-%d")
-
-        # Handle MySQL TIME as timedelta or time object
         time_val = t['time']
-        if hasattr(time_val, 'strftime'):  # if it's a datetime.time object
+        if hasattr(time_val, 'strftime'):
             t['time'] = time_val.strftime("%H:%M")
         else:
             try:
@@ -338,7 +336,6 @@ def reminder_data():
                 t['time'] = f"{hours:02d}:{minutes:02d}"
             except Exception:
                 t['time'] = str(time_val)[:5]
-
         fixed_tasks.append(t)
 
     return jsonify(fixed_tasks)

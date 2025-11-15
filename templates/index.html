@@ -12,8 +12,6 @@
     <div class="container">
         <header class="top-row card">
             <h1>🕒 ToDo Reminder</h1>
-
-            <!-- DND Toggle inside header card (global) -->
             <div class="dnd-wrapper">
                 <label class="dnd-label">🔕 DND
                     <input type="checkbox" id="dnd-toggle">
@@ -29,7 +27,6 @@
                 <input type="date" name="date" required>
                 <input type="time" name="time" required>
             </div>
-
             <div class="form-row">
                 <select name="frequency">
                     <option value="">One Time</option>
@@ -38,7 +35,6 @@
                     <option value="yearly">Every Year</option>
                 </select>
             </div>
-
             <div class="form-row">
                 <button type="submit" class="btn primary">Add Task</button>
             </div>
@@ -53,13 +49,12 @@
                         <div class="task-title">{{ task.title }}</div>
                         <div class="task-meta">{{ task.date }} • {{ task.time }}</div>
                     </div>
-
                     <div class="task-right">
                         {% if task.frequency %}
                         <span class="badge">{{ task.frequency }}</span>
                         {% endif %}
-
-                        <a href="/complete/{{ task.id }}" class="btn small">Mark as Read</a>
+                        <!-- Updated label: Mark as Complete -->
+                        <a href="/complete/{{ task.id }}" class="btn small">Mark as Complete</a>
 
                         <form method="POST" action="/delete/{{ task.id }}" class="inline-delete"
                             onsubmit="return confirmDelete();">

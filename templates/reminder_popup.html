@@ -13,8 +13,31 @@
         padding: 24px 28px;
         z-index: 9999;
         text-align: center;
-        width: 340px;
+        width: 360px;
         font-family: 'Poppins', sans-serif;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    /* pulsing effect while alarm is ringing */
+    .popup-pulse {
+        animation: popupPulse 1.2s infinite;
+    }
+
+    @keyframes popupPulse {
+        0% {
+            transform: translate(-50%, -50%) scale(1);
+            box-shadow: 0 10px 35px rgba(15, 23, 42, 0.2);
+        }
+
+        50% {
+            transform: translate(-50%, -50%) scale(1.02);
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.28);
+        }
+
+        100% {
+            transform: translate(-50%, -50%) scale(1);
+            box-shadow: 0 10px 35px rgba(15, 23, 42, 0.2);
+        }
     }
 
     #popup h2 {
@@ -49,119 +72,315 @@
         height: 100%;
         background: rgba(8, 15, 22, 0.45);
         z-index: 9998;
+        transition: opacity 0.15s ease;
+    }
+
+    #snooze-toast {
+        display: none;
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(11, 87, 208, 0.95);
+        color: white;
+        padding: 10px 14px;
+        border-radius: 8px;
+        z-index: 10000;
+        font-weight: 600;
     }
 </style>
 
 <div id="overlay"></div>
-<div id="popup">
+
+<div id="popup" aria-live="polite" aria-atomic="true" role="dialog" aria-modal="true">
     <h2 id="popup-title">Reminder</h2>
-    <p>It's time to complete your task!</p>
+    <p id="popup-sub">It's time to complete your task!</p>
+
     <div style="display:flex; gap:10px; justify-content:center;">
-        <button id="mark-done">Mark as Read</button>
+        <button id="mark-complete">Mark as Complete</button>
         <button id="snooze-5" class="btn">Snooze 5m</button>
     </div>
 </div>
 
-<!-- Alarm Sound -->
-<audio id="alarm-sound" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"></audio>
+<div id="snooze-toast">Snoozed for 5 minutes ✔</div>
+
+<!-- Use Google's default alarm sound (crossorigin included) -->
+<audio id="alarm-sound" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" preload="auto"
+    crossorigin="anonymous"></audio>
 
 <script>
+    /*
+      Behavior:
+      - Uses Google's alarm audio by default.
+      - Attempts to play the audio immediately and repeatedly while popup is visible.
+      - If audio.play() fails (autoplay policy), falls back to WebAudio beep pattern.
+      - Alarm repeats until user presses "Mark as Complete".
+      - Snooze 5m hides & postpones via server endpoint.
+    */
+
+    const alarmSound = document.getElementById('alarm-sound');
+
+    // WebAudio fallback
+    let audioCtx = null;
+    let oscIntervalId = null;
+
+    // Alarm repeat interval (ms)
+    const ALARM_REPEAT_MS = 8000;
+    let alarmRepeatTimer = null;
+
+    let currentPopTask = null;
+    let popupSuppressedUntil = 0;
     let isDND = false;
     let missedReminders = [];
-    let interval = 10000;
-    let intervalId = null;
-    let currentPopTask = null;
+    let pollInterval = 10000;
+    let pollIntervalId = null;
 
-    // read DND checkbox from header
-    function initDND() {
-        const dndToggle = document.getElementById("dnd-toggle");
+    // ---------------- audio element helpers ----------------
+    async function tryPlayAudioOnce() {
+        if (!alarmSound) return false;
+        try {
+            alarmSound.currentTime = 0;
+            const p = alarmSound.play();
+            if (p !== undefined) await p;
+            return true;
+        } catch (err) {
+            // play blocked (likely autoplay), return false so fallback can run
+            console.warn("Audio play failed:", err);
+            return false;
+        }
+    }
+
+    function stopAudioElement() {
+        try {
+            alarmSound.pause();
+            alarmSound.currentTime = 0;
+        } catch (e) { }
+    }
+
+    // ---------------- WebAudio fallback (short beep) ----------------
+    function ensureAudioContext() {
+        if (audioCtx && audioCtx.state) return audioCtx;
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            return audioCtx;
+        } catch (e) {
+            audioCtx = null;
+            return null;
+        }
+    }
+
+    function playSingleBeep(ctx) {
+        try {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'sine';
+            o.frequency.value = 880;
+            g.gain.value = 0.001;
+            o.connect(g);
+            g.connect(ctx.destination);
+
+            const now = ctx.currentTime;
+            g.gain.cancelScheduledValues(now);
+            g.gain.setValueAtTime(0.0001, now);
+            g.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+
+            o.start(now);
+            o.stop(now + 0.5);
+
+            o.onended = () => {
+                try { o.disconnect(); g.disconnect(); } catch (e) { }
+            };
+        } catch (e) {
+            console.warn("WebAudio beep failed:", e);
+        }
+    }
+
+    function startOscillatorPattern() {
+        stopOscillatorPattern();
+        const ctx = ensureAudioContext();
+        if (!ctx) return false;
+        playSingleBeep(ctx);
+        oscIntervalId = setInterval(() => playSingleBeep(ctx), ALARM_REPEAT_MS);
+        return true;
+    }
+
+    function stopOscillatorPattern() {
+        if (oscIntervalId) {
+            clearInterval(oscIntervalId);
+            oscIntervalId = null;
+        }
+    }
+
+    // ---------------- repeating alarm control ----------------
+    async function startRepeatingAlarm() {
+        stopRepeatingAlarm();
+        const ok = await tryPlayAudioOnce();
+        if (ok) {
+            // use audio element repeats
+            alarmRepeatTimer = setInterval(() => { tryPlayAudioOnce(); }, ALARM_REPEAT_MS);
+        } else {
+            // fallback to WebAudio beep pattern (if allowed)
+            const ctx = ensureAudioContext();
+            if (ctx) startOscillatorPattern();
+            else {
+                // try audio element occasionally if WebAudio unavailable
+                alarmRepeatTimer = setInterval(() => { tryPlayAudioOnce(); }, ALARM_REPEAT_MS * 2);
+            }
+        }
+        const popupEl = document.getElementById('popup');
+        if (popupEl) popupEl.classList.add('popup-pulse');
+    }
+
+    function stopRepeatingAlarm() {
+        if (alarmRepeatTimer) { clearInterval(alarmRepeatTimer); alarmRepeatTimer = null; }
+        stopAudioElement();
+        stopOscillatorPattern();
+        const popupEl = document.getElementById('popup');
+        if (popupEl) popupEl.classList.remove('popup-pulse');
+    }
+
+    // ---------------- popup show/hide ----------------
+    function hidePopup() {
+        const popup = document.getElementById('popup');
+        const overlay = document.getElementById('overlay');
+        if (popup) popup.style.display = 'none';
+        if (overlay) overlay.style.display = 'none';
+        stopRepeatingAlarm();
+    }
+
+    function showPopup(task) {
+        if (Date.now() < popupSuppressedUntil) return;
+        const popup = document.getElementById('popup');
+        if (currentPopTask && currentPopTask.id === task.id && popup && popup.style.display === 'block') return;
+
+        currentPopTask = task;
+        if (isDND) return;
+
+        document.getElementById('popup-title').innerText = task.title;
+        document.getElementById('popup-sub').innerText = `Scheduled: ${task.date} ${task.time}`;
+
+        if (popup) popup.style.display = 'block';
+        const overlay = document.getElementById('overlay');
+        if (overlay) overlay.style.display = 'block';
+
+        startRepeatingAlarm();
+
+        // Mark as Complete button (keeps server-side behavior)
+        const markBtn = document.getElementById('mark-complete');
+        if (markBtn) {
+            markBtn.onclick = () => {
+                stopRepeatingAlarm();
+                currentPopTask = null;
+                window.location.href = `/complete/${task.id}`;
+            };
+        }
+
+        // Snooze button
+        const snoozeBtn = document.getElementById('snooze-5');
+        if (snoozeBtn) {
+            snoozeBtn.onclick = async () => {
+                snoozeBtn.disabled = true;
+                snoozeBtn.innerText = 'Snoozing...';
+                try {
+                    const resp = await fetch(`/snooze/${task.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ minutes: 5 })
+                    });
+                    const data = await resp.json();
+                    if (data && data.success) {
+                        const toast = document.getElementById('snooze-toast');
+                        if (toast) {
+                            toast.innerText = `Snoozed to ${data.new_date} ${data.new_time} ✔`;
+                            toast.style.display = 'block';
+                            setTimeout(() => { toast.style.display = 'none'; }, 3000);
+                        }
+                        hidePopup();
+                        currentPopTask = null;
+                        popupSuppressedUntil = Date.now() + 3000;
+                    } else {
+                        alert('Failed to snooze: ' + (data.error || 'Unknown error'));
+                    }
+                } catch (e) {
+                    alert('Snooze failed: ' + e);
+                } finally {
+                    snoozeBtn.disabled = false;
+                    snoozeBtn.innerText = 'Snooze 5m';
+                }
+            };
+        }
+    }
+
+    // ---------------- polling reminders ----------------
+    async function fetchReminders() {
+        const resp = await fetch('/reminder-data');
+        return await resp.json();
+    }
+
+    function getNowStrings() {
+        const now = new Date();
+        return { date: now.toISOString().split('T')[0], time: now.toTimeString().slice(0, 5) };
+    }
+
+    function checkMissedReminders() {
+        if (missedReminders.length > 0) {
+            missedReminders.forEach(t => showPopup(t));
+            missedReminders = [];
+        }
+    }
+
+    async function dynamicCheckLoop() {
+        try {
+            const reminders = await fetchReminders();
+            const now = new Date();
+            let nearestDiff = Infinity;
+
+            reminders.forEach(task => {
+                try {
+                    const dt = new Date(`${task.date}T${task.time}:00`);
+                    const diff = dt - now;
+                    if (diff > 0 && diff < nearestDiff) nearestDiff = diff;
+                } catch (e) { }
+            });
+
+            pollInterval = (nearestDiff <= 5000) ? 1000 : 10000;
+
+            const { date, time } = getNowStrings();
+
+            const display = document.getElementById('time-display');
+            if (display) display.innerText = `Current Time: ${date} ${time} ${isDND ? '🔕' : ''}`;
+
+            reminders.forEach(task => {
+                try {
+                    if (task.date === date && task.time === time) {
+                        if (isDND) missedReminders.push(task);
+                        else showPopup(task);
+                    }
+                } catch (e) { }
+            });
+        } catch (e) {
+            console.warn('Reminder poll failed', e);
+        } finally {
+            if (pollIntervalId) clearInterval(pollIntervalId);
+            pollIntervalId = setInterval(dynamicCheckLoop, pollInterval);
+        }
+    }
+
+    // initialize DND and start polling
+    function initDndToggle() {
+        const dndToggle = document.getElementById('dnd-toggle');
         if (dndToggle) {
             isDND = dndToggle.checked || false;
-            dndToggle.addEventListener("change", () => {
+            dndToggle.addEventListener('change', () => {
                 isDND = dndToggle.checked;
                 if (!isDND) checkMissedReminders();
             });
         }
     }
 
-    document.addEventListener("DOMContentLoaded", () => {
-        initDND();
+    document.addEventListener('DOMContentLoaded', () => {
+        initDndToggle();
+        dynamicCheckLoop();
     });
-
-    async function fetchReminders() {
-        const response = await fetch("/reminder-data");
-        return await response.json();
-    }
-
-    function getCurrentDateTime() {
-        const now = new Date();
-        const date = now.toISOString().split('T')[0];
-        const time = now.toTimeString().slice(0, 5);
-        return { date, time };
-    }
-
-    function showPopup(task) {
-        currentPopTask = task;
-        if (isDND) return;
-        document.getElementById("popup-title").innerText = task.title;
-        document.getElementById("popup").style.display = "block";
-        document.getElementById("overlay").style.display = "block";
-        const sound = document.getElementById("alarm-sound");
-        sound.play();
-
-        document.getElementById("mark-done").onclick = () => {
-            window.location.href = `/complete/${task.id}`;
-        };
-
-        document.getElementById("snooze-5").onclick = () => {
-            document.getElementById("popup").style.display = "none";
-            document.getElementById("overlay").style.display = "none";
-            setTimeout(() => {
-                missedReminders.push(task);
-            }, 300000); // 5 min
-        };
-    }
-
-    function checkMissedReminders() {
-        if (missedReminders.length > 0) {
-            missedReminders.forEach(task => showPopup(task));
-            missedReminders = [];
-        }
-    }
-
-    async function dynamicCheck() {
-        const reminders = await fetchReminders();
-        const now = new Date();
-        let nearestDiff = Infinity;
-
-        reminders.forEach(task => {
-            const taskDateTime = new Date(`${task.date}T${task.time}:00`);
-            const diff = taskDateTime - now;
-            if (diff > 0 && diff < nearestDiff) nearestDiff = diff;
-        });
-
-        if (nearestDiff <= 5000) interval = 1000;
-        else if (nearestDiff > 10000) interval = 10000;
-
-        const { date, time } = getCurrentDateTime();
-        const timeDisplay = document.getElementById("time-display");
-        if (timeDisplay) {
-            timeDisplay.innerText = "Current Time: " + date + " " + time + (isDND ? " 🔕 (DND On)" : "");
-        }
-
-        reminders.forEach(task => {
-            if (task.date === date && task.time === time) {
-                if (isDND) {
-                    missedReminders.push(task);
-                } else {
-                    showPopup(task);
-                }
-            }
-        });
-
-        clearInterval(intervalId);
-        intervalId = setInterval(dynamicCheck, interval);
-    }
-
-    dynamicCheck();
 </script>
