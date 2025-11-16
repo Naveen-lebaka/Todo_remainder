@@ -42,6 +42,10 @@ A clean UI + real alarm + practical logic makes this much more useful than norma
 📌 **Reminder Popup**  
 ![Popup](Screenshot/Reminder_Check.png)
 
+📌 **📁 Project Structure** 
+
+![Popup](Screenshot/Project_struture.png)
+
 ---
 
 ## 🌟 Highlights
