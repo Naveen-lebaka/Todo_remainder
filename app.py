@@ -8,9 +8,6 @@ app = Flask(__name__)
 app.secret_key = "todo-secret-key"
 
 
-# -----------------------
-# Helpers: robust parsing and next occurrence
-# -----------------------
 def _timedelta_to_time(td: timedelta) -> time:
     total_seconds = int(td.total_seconds()) % (24 * 3600)
     hours = (total_seconds // 3600) % 24
@@ -95,9 +92,6 @@ def next_occurrence(dt: datetime, frequency: str) -> datetime:
         raise ValueError("Unsupported frequency")
 
 
-# -----------------------
-# Routes
-# -----------------------
 @app.route('/')
 def index():
     conn = get_db_connection()
